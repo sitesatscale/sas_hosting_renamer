@@ -1,0 +1,3 @@
+.w-image img:not([src*=".svg"]), .w-image[class*="ush_image_"] img {
+    width: 100% !important;
+}
