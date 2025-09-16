@@ -185,8 +185,7 @@ class SAS_API_Endpoints {
         }
         
         // Validate with external API
-        // TODO: Change this back to https://api.sitesatscale.com for production
-        $validation_url = 'http://localhost:8000/api/wordpress/auth/validate-token';
+        $validation_url = 'https://api.sitesatscale.com/api/wordpress/auth/validate-token';
         
         $response = wp_remote_post($validation_url, array(
             'headers' => array(
@@ -262,8 +261,7 @@ class SAS_API_Endpoints {
         // Admin user created successfully
         
         // Notify the external API about successful creation
-        // TODO: Change this back to https://api.sitesatscale.com for production
-        wp_remote_post('http://localhost:8000/api/wordpress/auth/log-action', array(
+        wp_remote_post('https://api.sitesatscale.com/api/wordpress/auth/log-action', array(
             'headers' => array(
                 'Content-Type' => 'application/json'
             ),
