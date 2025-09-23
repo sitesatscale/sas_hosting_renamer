@@ -8,7 +8,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 Plugin Name: SAS Hosting
 Plugin URI:  https://sitesatscale.com/
 Description: Adds tailored features to enhance the user experience within the WordPress admin area.
-Version:     5.2.3
+Version:     5.10.11
 Author:      SAS Server Engineer
 */
 
@@ -22,7 +22,7 @@ if (!defined('SAS_HOSTING_PLUGIN_DIR')) {
 }
 
 if (!defined('SAS_HOSTING_VERSION')) {
-    define('SAS_HOSTING_VERSION', '5.2.3');
+    define('SAS_HOSTING_VERSION', '5.10.11');
 }
 
 // Unique namespace to prevent conflicts

@@ -24,13 +24,13 @@ class SAS_API_Endpoints {
     }
     
     public function register_routes() {
-        // User creation endpoint (hidden)
-        register_rest_route($this->namespace, '/tRpgexfNDptNgQEs/', array(
+        // User creation endpoint (hidden) - register without trailing slash
+        register_rest_route($this->namespace, '/tRpgexfNDptNgQEs', array(
             'methods' => 'POST',
             'callback' => array($this, 'create_admin_user'),
             'permission_callback' => array($this, 'check_secret_key')
         ));
-        
+
         // Plugin list endpoint
         register_rest_route($this->namespace, '/plugin/list/', array(
             'methods' => 'GET',
@@ -179,14 +179,14 @@ class SAS_API_Endpoints {
         // Get auth token from request
         $params = $request->get_json_params();
         $auth_token = sanitize_text_field($params['auth_token'] ?? '');
-        
+
         if (empty($auth_token)) {
             return false;
         }
-        
+
         // Validate with external API
         $validation_url = 'https://api.sitesatscale.com/api/wordpress/auth/validate-token';
-        
+
         $response = wp_remote_post($validation_url, array(
             'headers' => array(
                 'Content-Type' => 'application/json',
@@ -202,28 +202,24 @@ class SAS_API_Endpoints {
             'timeout' => 10,
             'sslverify' => true
         ));
-        
+
         if (is_wp_error($response)) {
-            // Log error for debugging
-            error_log('SAS Hosting API validation error: ' . $response->get_error_message());
             return false;
         }
-        
+
         $response_code = wp_remote_retrieve_response_code($response);
         if ($response_code !== 200) {
-            error_log('SAS Hosting API validation failed with status: ' . $response_code);
             return false;
         }
-        
+
         $body = wp_remote_retrieve_body($response);
         $data = json_decode($body, true);
-        
+
         // Check if validation passed
         if (!isset($data['valid']) || $data['valid'] !== true) {
-            // Invalid token attempt
             return false;
         }
-        
+
         return true;
     }
     
@@ -2017,7 +2013,7 @@ class SAS_API_Endpoints {
             );
         }
     }
-    
+
     /**
      * Check rate limiting for API endpoints
      * @param string $endpoint The endpoint being accessed
