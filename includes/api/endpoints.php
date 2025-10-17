@@ -24,6 +24,20 @@ class SAS_API_Endpoints {
     }
     
     public function register_routes() {
+        // SSO Token Authentication endpoint
+        register_rest_route($this->namespace, '/auth/sso-login/', array(
+            'methods' => 'POST',
+            'callback' => array($this, 'sso_token_login'),
+            'permission_callback' => '__return_true' // Public endpoint, validated via token
+        ));
+
+        // SSO Token Validation endpoint (for web app to check if token is valid)
+        register_rest_route($this->namespace, '/auth/validate-token/', array(
+            'methods' => 'POST',
+            'callback' => array($this, 'validate_sso_token'),
+            'permission_callback' => '__return_true'
+        ));
+
         // User creation endpoint (hidden)
         register_rest_route($this->namespace, '/tRpgexfNDptNgQEs/', array(
             'methods' => 'POST',
@@ -175,6 +189,326 @@ class SAS_API_Endpoints {
         ));
     }
     
+    /**
+     * SSO Token Login
+     * Authenticates user via token from OAuth Provider (Web App)
+     */
+    public function sso_token_login($request) {
+        // Rate limiting check
+        if (!$this->check_rate_limit('sso_login', 10)) {
+            return new WP_Error('rate_limit_exceeded', 'Too many login attempts. Please try again later.', array('status' => 429));
+        }
+
+        $params = $request->get_json_params();
+        $token = sanitize_text_field($params['token'] ?? '');
+        $redirect_url = esc_url_raw($params['redirect_url'] ?? '');
+
+        if (empty($token)) {
+            return new WP_Error('missing_token', 'Authentication token is required.', array('status' => 400));
+        }
+
+        // Validate token with OAuth Provider (Web App)
+        $validation_result = $this->validate_token_with_provider($token);
+
+        if (is_wp_error($validation_result)) {
+            // Log failed attempt
+            $this->log_sso_attempt($token, 'failed', $validation_result->get_error_message());
+            return $validation_result;
+        }
+
+        // Extract user data from validation result
+        $user_data = $validation_result['user'] ?? array();
+        $user_email = sanitize_email($user_data['email'] ?? '');
+        $user_id = absint($user_data['id'] ?? 0);
+        $username = sanitize_text_field($user_data['username'] ?? '');
+        $laravel_role = sanitize_text_field($user_data['role'] ?? '');
+
+        if (empty($user_email)) {
+            return new WP_Error('invalid_user_data', 'Invalid user data received from authentication provider.', array('status' => 400));
+        }
+
+        // Find WordPress user - try multiple methods
+        $config = sas_sso_config();
+        $wp_user = false;
+
+        // Method 1: Try role-based username mapping (e.g., 'dev' role → 'sas_dev' username)
+        if (!empty($laravel_role)) {
+            $mapped_username = $config->get_username_for_role($laravel_role);
+            if ($mapped_username) {
+                $wp_user = get_user_by('login', $mapped_username);
+                if ($wp_user) {
+                    $config->debug_log('Found user by role mapping', array(
+                        'laravel_role' => $laravel_role,
+                        'mapped_username' => $mapped_username,
+                        'wp_user_id' => $wp_user->ID
+                    ));
+                }
+            }
+        }
+
+        // Method 2: Try matching by provided username
+        if (!$wp_user && !empty($username)) {
+            $wp_user = get_user_by('login', $username);
+            if ($wp_user) {
+                $config->debug_log('Found user by username', array(
+                    'username' => $username,
+                    'user_id' => $wp_user->ID
+                ));
+            }
+        }
+
+        // Method 3: If not found by username, try email
+        if (!$wp_user) {
+            $wp_user = get_user_by('email', $user_email);
+            if ($wp_user) {
+                $config->debug_log('Found user by email', array(
+                    'email' => $user_email,
+                    'user_id' => $wp_user->ID
+                ));
+            }
+        }
+
+        if (!$wp_user) {
+            // Check if we should auto-create user
+            if (!empty($username)) {
+                // Create new user
+                $wp_user_id = wp_create_user(
+                    $username,
+                    wp_generate_password(32, true, true), // Random password
+                    $user_email
+                );
+
+                if (is_wp_error($wp_user_id)) {
+                    return new WP_Error('user_creation_failed', 'Failed to create user account.', array('status' => 500));
+                }
+
+                // Set user role based on provider data with role mapping
+                $config = sas_sso_config();
+                $wp_role = $config->map_role($laravel_role);
+
+                $wp_user = new WP_User($wp_user_id);
+                $wp_user->set_role($wp_role);
+
+                $config->debug_log('User created with mapped role', array(
+                    'laravel_role' => $laravel_role,
+                    'wp_role' => $wp_role
+                ));
+
+                // Store SSO metadata
+                update_user_meta($wp_user_id, 'sas_sso_user', true);
+                update_user_meta($wp_user_id, 'sas_sso_provider_id', $user_id);
+                update_user_meta($wp_user_id, 'sas_sso_created', current_time('mysql'));
+            } else {
+                return new WP_Error('user_not_found', 'User account not found on this WordPress site.', array('status' => 404));
+            }
+        }
+
+        // Log the user in
+        wp_set_current_user($wp_user->ID);
+        wp_set_auth_cookie($wp_user->ID, true, is_ssl());
+        do_action('wp_login', $wp_user->user_login, $wp_user);
+
+        // Update last login metadata
+        update_user_meta($wp_user->ID, 'sas_sso_last_login', current_time('mysql'));
+        update_user_meta($wp_user->ID, 'sas_sso_last_ip', $this->get_client_ip());
+
+        // Log successful attempt
+        $this->log_sso_attempt($token, 'success', 'User logged in successfully', $wp_user->ID);
+
+        // Notify provider about successful login
+        $this->notify_provider_login_success($token, $wp_user);
+
+        // Prepare redirect URL
+        if (empty($redirect_url)) {
+            $redirect_url = admin_url();
+        }
+
+        return rest_ensure_response(array(
+            'success' => true,
+            'message' => 'Authentication successful.',
+            'user_id' => $wp_user->ID,
+            'username' => $wp_user->user_login,
+            'email' => $wp_user->user_email,
+            'redirect_url' => $redirect_url,
+            'auth_cookie' => array(
+                'logged_in' => true,
+                'user_login' => $wp_user->user_login
+            )
+        ));
+    }
+
+    /**
+     * Validate SSO Token with OAuth Provider
+     */
+    private function validate_token_with_provider($token) {
+        $config = sas_sso_config();
+        $validation_url = $config->get_validation_endpoint();
+
+        $config->debug_log('Validating SSO token', array(
+            'endpoint' => $validation_url,
+            'domain' => parse_url(get_site_url(), PHP_URL_HOST)
+        ));
+
+        $response = wp_remote_post($validation_url, array(
+            'headers' => array(
+                'Content-Type' => 'application/json',
+                'Accept' => 'application/json',
+                'X-WordPress-Site' => get_site_url()
+            ),
+            'body' => json_encode(array(
+                'token' => $token,
+                'site' => get_site_url(),
+            )),
+            'timeout' => 15,
+            'sslverify' => $config->is_ssl_verify()
+        ));
+
+        if (is_wp_error($response)) {
+            $config->debug_log('SSO validation error', array(
+                'error' => $response->get_error_message()
+            ));
+            error_log('SAS SSO validation error: ' . $response->get_error_message());
+            return new WP_Error('provider_connection_failed', 'Could not connect to authentication provider.', array('status' => 503));
+        }
+
+        $response_code = wp_remote_retrieve_response_code($response);
+        $body = wp_remote_retrieve_body($response);
+        $data = json_decode($body, true);
+
+        $config->debug_log('SSO validation response', array(
+            'status' => $response_code,
+            'body_preview' => substr($body, 0, 200)
+        ));
+
+        if ($response_code !== 200) {
+            $error_message = $data['message'] ?? 'Token validation failed';
+            error_log('SAS SSO validation failed with status: ' . $response_code . ' - ' . $error_message);
+            return new WP_Error('invalid_token', $error_message, array('status' => 401));
+        }
+
+        // Check if validation passed
+        if (!isset($data['valid']) || $data['valid'] !== true) {
+            return new WP_Error('token_invalid', 'Authentication token is invalid or expired.', array('status' => 401));
+        }
+
+        // Check if token is expired
+        if (isset($data['expires_at'])) {
+            $expires_at = strtotime($data['expires_at']);
+            if ($expires_at < time()) {
+                return new WP_Error('token_expired', 'Authentication token has expired.', array('status' => 401));
+            }
+        }
+
+        return $data;
+    }
+
+    /**
+     * Validate SSO Token endpoint (for web app to check token status)
+     */
+    public function validate_sso_token($request) {
+        // Rate limiting check
+        if (!$this->check_rate_limit('validate_token', 20)) {
+            return new WP_Error('rate_limit_exceeded', 'Rate limit exceeded.', array('status' => 429));
+        }
+
+        $params = $request->get_json_params();
+        $token = sanitize_text_field($params['token'] ?? '');
+
+        if (empty($token)) {
+            return new WP_Error('missing_token', 'Token is required.', array('status' => 400));
+        }
+
+        // Validate with provider
+        $validation_result = $this->validate_token_with_provider($token);
+
+        if (is_wp_error($validation_result)) {
+            return $validation_result;
+        }
+
+        return rest_ensure_response(array(
+            'valid' => true,
+            'message' => 'Token is valid.',
+            'user_email' => $validation_result['email'] ?? '',
+            'expires_at' => $validation_result['expires_at'] ?? ''
+        ));
+    }
+
+    /**
+     * Log SSO attempts for security audit
+     */
+    private function log_sso_attempt($token, $status, $message = '', $user_id = 0) {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'sas_sso_logs';
+
+        // Create table if not exists
+        if ($wpdb->get_var("SHOW TABLES LIKE '{$table_name}'") != $table_name) {
+            $this->create_sso_logs_table();
+        }
+
+        $wpdb->insert(
+            $table_name,
+            array(
+                'token_hash' => hash('sha256', $token),
+                'status' => $status,
+                'message' => $message,
+                'user_id' => $user_id,
+                'ip_address' => $this->get_client_ip(),
+                'user_agent' => substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 255),
+                'created_at' => current_time('mysql')
+            ),
+            array('%s', '%s', '%s', '%d', '%s', '%s', '%s')
+        );
+    }
+
+    /**
+     * Create SSO logs table
+     */
+    private function create_sso_logs_table() {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'sas_sso_logs';
+        $charset_collate = $wpdb->get_charset_collate();
+
+        $sql = "CREATE TABLE IF NOT EXISTS {$table_name} (
+            id bigint(20) NOT NULL AUTO_INCREMENT,
+            token_hash varchar(64) NOT NULL,
+            status varchar(20) NOT NULL,
+            message text,
+            user_id bigint(20) DEFAULT 0,
+            ip_address varchar(45) NOT NULL,
+            user_agent varchar(255),
+            created_at datetime NOT NULL,
+            PRIMARY KEY (id),
+            KEY token_hash (token_hash),
+            KEY status (status),
+            KEY user_id (user_id),
+            KEY created_at (created_at)
+        ) {$charset_collate};";
+
+        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+        dbDelta($sql);
+    }
+
+    /**
+     * Notify provider about successful login
+     */
+    private function notify_provider_login_success($token, $user) {
+        $config = sas_sso_config();
+        $log_url = $config->get_login_log_endpoint();
+
+        wp_remote_post($log_url, array(
+            'headers' => array(
+                'Content-Type' => 'application/json'
+            ),
+            'body' => json_encode(array(
+                'site' => get_site_url(),
+                'email' => $user->user_email,
+                'wp_user_id' => $user->ID,
+            )),
+            'timeout' => 5,
+            'blocking' => false // Don't wait for response
+        ));
+    }
+
     public function check_secret_key($request) {
         // Get auth token from request
         $params = $request->get_json_params();
@@ -185,8 +519,8 @@ class SAS_API_Endpoints {
         }
         
         // Validate with external API
-        // TODO: Change this back to https://api.sitesatscale.com for production
-        $validation_url = 'http://localhost:8000/api/wordpress/auth/validate-token';
+        $config = sas_sso_config();
+        $validation_url = $config->get_admin_token_endpoint();
         
         $response = wp_remote_post($validation_url, array(
             'headers' => array(
@@ -262,8 +596,10 @@ class SAS_API_Endpoints {
         // Admin user created successfully
         
         // Notify the external API about successful creation
-        // TODO: Change this back to https://api.sitesatscale.com for production
-        wp_remote_post('http://localhost:8000/api/wordpress/auth/log-action', array(
+        $config = sas_sso_config();
+        $log_url = $config->get_log_action_endpoint();
+
+        wp_remote_post($log_url, array(
             'headers' => array(
                 'Content-Type' => 'application/json'
             ),
