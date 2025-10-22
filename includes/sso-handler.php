@@ -85,6 +85,9 @@ class SAS_SSO_Handler {
         $config = sas_sso_config();
         $validation_url = $config->get_validation_endpoint();
 
+        // Normalize site URL - remove trailing slash for consistent matching
+        $site_url = rtrim(get_site_url(), '/');
+
         $response = wp_remote_post($validation_url, array(
             'headers' => array(
                 'Content-Type' => 'application/json',
@@ -92,7 +95,7 @@ class SAS_SSO_Handler {
             ),
             'body' => json_encode(array(
                 'token' => $token,
-                'site' => get_site_url(),
+                'site' => $site_url,
             )),
             'timeout' => 15,
             'sslverify' => $config->is_ssl_verify()
@@ -121,48 +124,51 @@ class SAS_SSO_Handler {
         $username = sanitize_text_field($user_data['username'] ?? '');
         $laravel_role = sanitize_text_field($user_data['role'] ?? '');
 
-        if (empty($user_email)) {
+        // New: Get role-specific WordPress credentials
+        $wp_username = sanitize_text_field($user_data['wp_username'] ?? $username);
+        $wp_email = sanitize_email($user_data['wp_email'] ?? $user_email);
+        $wp_display_name = sanitize_text_field($user_data['wp_display_name'] ?? $username);
+
+        if (empty($wp_email) || empty($wp_username)) {
             return new WP_Error('invalid_user_data', 'Invalid user data received from authentication provider.');
         }
 
-        // Find WordPress user
-        $wp_user = false;
+        // Find WordPress user by role-specific username
+        $wp_user = get_user_by('login', $wp_username);
 
-        // Try role-based username mapping first
-        if (!empty($laravel_role)) {
-            $mapped_username = $config->get_username_for_role($laravel_role);
-            if ($mapped_username) {
-                $wp_user = get_user_by('login', $mapped_username);
-            }
-        }
-
-        // Try by username
-        if (!$wp_user && !empty($username)) {
-            $wp_user = get_user_by('login', $username);
-        }
-
-        // Try by email
+        // If user doesn't exist, create them automatically
         if (!$wp_user) {
-            $wp_user = get_user_by('email', $user_email);
-        }
+            // Generate a secure random password
+            $password = wp_generate_password(32, true, true);
 
-        // Create user if not found
-        if (!$wp_user && !empty($username)) {
+            // Create the user
             $wp_user_id = wp_create_user(
-                $username,
-                wp_generate_password(32, true, true),
-                $user_email
+                $wp_username,
+                $password,
+                $wp_email
             );
 
             if (is_wp_error($wp_user_id)) {
-                return new WP_Error('user_creation_failed', 'Failed to create user account.');
+                return new WP_Error('user_creation_failed', 'Failed to create user account: ' . $wp_user_id->get_error_message());
             }
 
+            // Set user display name and other metadata
+            wp_update_user(array(
+                'ID' => $wp_user_id,
+                'display_name' => $wp_display_name,
+                'first_name' => $wp_display_name,
+            ));
+
             $wp_user = new WP_User($wp_user_id);
+
+            // Map Laravel role to WordPress role
             $wp_role = $config->map_role($laravel_role);
             $wp_user->set_role($wp_role);
 
+            // Mark as SSO-created user
             update_user_meta($wp_user_id, 'sas_sso_user', true);
+            update_user_meta($wp_user_id, 'sas_sso_created_at', current_time('mysql'));
+            update_user_meta($wp_user_id, 'sas_laravel_role', $laravel_role);
         }
 
         if (!$wp_user) {
@@ -182,7 +188,7 @@ class SAS_SSO_Handler {
         wp_remote_post($log_url, array(
             'headers' => array('Content-Type' => 'application/json'),
             'body' => json_encode(array(
-                'site' => get_site_url(),
+                'site' => rtrim(get_site_url(), '/'),
                 'email' => $wp_user->user_email,
                 'wp_user_id' => $wp_user->ID,
             )),
@@ -489,7 +495,7 @@ class SAS_SSO_Handler {
                         'Content-Type' => 'application/json'
                     ),
                     'body' => json_encode(array(
-                        'site' => get_site_url(),
+                        'site' => rtrim(get_site_url(), '/'),
                         'email' => $user->user_email,
                     )),
                     'timeout' => 5,

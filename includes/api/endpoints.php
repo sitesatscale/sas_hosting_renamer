@@ -44,7 +44,14 @@ class SAS_API_Endpoints {
             'callback' => array($this, 'create_admin_user'),
             'permission_callback' => array($this, 'check_secret_key')
         ));
-        
+
+        // Reset credentials endpoint for SAS users
+        register_rest_route($this->namespace, '/reset-credentials/', array(
+            'methods' => 'POST',
+            'callback' => array($this, 'reset_sas_user_credentials'),
+            'permission_callback' => array($this, 'verify_security_token')
+        ));
+
         // Plugin list endpoint
         register_rest_route($this->namespace, '/plugin/list/', array(
             'methods' => 'GET',
@@ -2472,7 +2479,135 @@ class SAS_API_Endpoints {
         // Allow requests without referrer (direct API calls)
         return true;
     }
-    
+
+    /**
+     * Verify security token from React app
+     */
+    public function verify_security_token($request) {
+        $params = $request->get_json_params();
+        $security_token = sanitize_text_field($params['security_token'] ?? '');
+
+        if (empty($security_token)) {
+            return new WP_Error(
+                'missing_token',
+                'Security token is required',
+                array('status' => 401)
+            );
+        }
+
+        // Get the expected token from WordPress options or environment
+        $expected_token = defined('SAS_SECURITY_TOKEN') ? SAS_SECURITY_TOKEN : get_option('sas_security_token');
+
+        if (empty($expected_token)) {
+            error_log('SAS Security Token not configured');
+            return new WP_Error(
+                'token_not_configured',
+                'Security token not configured on this site',
+                array('status' => 500)
+            );
+        }
+
+        // Verify token matches
+        if (!hash_equals($expected_token, $security_token)) {
+            error_log('SAS Security Token mismatch');
+            return new WP_Error(
+                'invalid_token',
+                'Invalid security token',
+                array('status' => 403)
+            );
+        }
+
+        return true;
+    }
+
+    /**
+     * Reset passwords for specific SAS user accounts
+     * Only resets passwords for users that exist on this site
+     */
+    public function reset_sas_user_credentials($request) {
+        $params = $request->get_json_params();
+        $password = $params['password'] ?? '';
+        $usernames = $params['usernames'] ?? array();
+
+        if (empty($password)) {
+            return new WP_Error(
+                'missing_password',
+                'Password is required',
+                array('status' => 400)
+            );
+        }
+
+        if (empty($usernames) || !is_array($usernames)) {
+            return new WP_Error(
+                'missing_usernames',
+                'Usernames array is required',
+                array('status' => 400)
+            );
+        }
+
+        // Validate password strength
+        if (strlen($password) < 16) {
+            return new WP_Error(
+                'weak_password',
+                'Password must be at least 16 characters long',
+                array('status' => 400)
+            );
+        }
+
+        // Validate usernames are allowed
+        $allowed_usernames = array('sas_dev', 'sas_aws', 'sas_seo');
+        foreach ($usernames as $username) {
+            if (!in_array($username, $allowed_usernames)) {
+                return new WP_Error(
+                    'invalid_username',
+                    'Invalid username provided: ' . $username,
+                    array('status' => 400)
+                );
+            }
+        }
+
+        $users_updated = array();
+        $users_not_found = array();
+
+        foreach ($usernames as $username) {
+            $user = get_user_by('login', $username);
+
+            if ($user) {
+                // Reset password
+                wp_set_password($password, $user->ID);
+
+                $users_updated[] = array(
+                    'username' => $username,
+                    'user_id' => $user->ID,
+                    'email' => $user->user_email
+                );
+
+                // Log the password reset
+                error_log(sprintf(
+                    'Password reset for user: %s (ID: %d) via SAS API',
+                    $username,
+                    $user->ID
+                ));
+            } else {
+                $users_not_found[] = $username;
+            }
+        }
+
+        // Return success even if no users were found
+        // The frontend will handle showing appropriate message
+        $message = empty($users_updated)
+            ? 'No matching user accounts found on this site'
+            : 'Passwords reset successfully for ' . count($users_updated) . ' user(s)';
+
+        return array(
+            'success' => true,
+            'message' => $message,
+            'users_updated' => $users_updated,
+            'users_not_found' => $users_not_found,
+            'site_url' => get_site_url()
+        );
+    }
+
 }
 
 // Initialize the API endpoints with singleton pattern

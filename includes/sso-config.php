@@ -108,8 +108,8 @@ class SAS_SSO_Config {
             return constant('SAS_SSO_PROVIDER_URL');
         }
 
-        // Production URL
-        $production_url = 'https://annotation.sitesatscale.com';
+        // Production API URL
+        $production_url = 'https://api.sitesatscale.com';
 
         // For local development, you can use localhost Laravel or mock
         if ($is_local) {
